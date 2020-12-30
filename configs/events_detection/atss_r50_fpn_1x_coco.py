@@ -1,6 +1,5 @@
 _base_ = [
-    'dataset_001.py',
-    '../_base_/schedules/schedule_1x.py', '../_base_/default_runtime.py'
+    'dataset_001.py', '../_base_/default_runtime.py'
 ]
 model = dict(
     type='ATSS',
@@ -68,10 +67,22 @@ log_config = dict(
 # optimizer
 # By default, schedule_1x contains optimizer = dict(type='SGD', lr=0.02, momentum=0.9, weight_decay=0.0001).
 # To remove unspecified settings, use _detelte_=True
-optimizer = dict(type='Adam', lr=0.0005, _delete_=True)
-# optimizer_config = dict(grad_clip=None)
-total_epochs=200
+# optimizer = dict(type='Adam', lr=0.0005, _delete_=True)
+optimizer = dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0001)
+optimizer_config = dict(grad_clip=None)
+# learning policy
+lr_config = dict(
+    policy='step',
+    warmup='linear',
+    warmup_iters=100,
+    warmup_ratio=0.001,
+    by_epoch=True,
+    # step parameter dictates when to drop learning rate by gamma (default==0.1)
+    # step=[20, 80] means that the base rate will first be dropped by gamma at the 20th step 
+    # (or epch depending on by_epoch parameter), and then will be further dropped by gamma at 80th step/epoch.
+    step=[20, 80])
 checkpoint_config = dict(interval=10)
 # default runtime configuration only expects to run training without validation. 
 # To fix that pls add val to the workflow
-workflow = [('train', 5), ('val', 1)]
+workflow = [('train', 1), ('val', 1)]
+total_epochs=200
