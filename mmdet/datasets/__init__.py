@@ -12,6 +12,7 @@ from .voc import VOCDataset
 from .wider_face import WIDERFaceDataset
 from .xml_style import XMLDataset
 from .patient_event_det import PatientEventDet
+from .patient_event_det_v2 import PatientEventDetV2
 
 __all__ = [
     'CustomDataset', 'XMLDataset', 'CocoDataset', 'DeepFashionDataset',
@@ -19,5 +20,5 @@ __all__ = [
     'LVISV1Dataset', 'GroupSampler', 'DistributedGroupSampler',
     'DistributedSampler', 'build_dataloader', 'ConcatDataset', 'RepeatDataset',
     'ClassBalancedDataset', 'WIDERFaceDataset', 'DATASETS', 'PIPELINES',
-    'build_dataset', 'replace_ImageToTensor', 'PatientEventDet'
+    'build_dataset', 'replace_ImageToTensor', 'PatientEventDet', 'PatientEventDetV2'
 ]
