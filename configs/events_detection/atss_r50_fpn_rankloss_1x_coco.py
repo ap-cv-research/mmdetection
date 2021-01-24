@@ -26,6 +26,7 @@ model = dict(
         in_channels=256,
         stacked_convs=4,
         feat_channels=256,
+        n_anchors=256,
         anchor_generator=dict(
             type='AnchorGenerator',
             ratios=[1.0],
@@ -85,7 +86,7 @@ log_config = dict(
             init_kwargs=dict(
                 project='PatientEventsV2', 
                 config=dict(model=model, train_cfg=train_cfg, optimizer=optimizer, lr_config=lr_config),
-                tags=['ATSS', 'ResNet50', 'DatasetV2']
+                tags=['ATSS', 'ResNet50', 'DatasetV2', 'Rank', 'Anchors256']
             )
         )
     ])
