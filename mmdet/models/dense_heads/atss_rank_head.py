@@ -1,8 +1,8 @@
 from mmcv.runner import force_fp32
-from mmdet.core import (multi_apply, reduce_mean)
+from mmdet.core import (multi_apply, reduce_mean, build_assigner, build_sampler)
 import torch
 from .atss_head import ATSSHead
-from ..builder import HEADS
+from ..builder import HEADS, build_loss
 
 
 EPS = 1e-12
@@ -11,24 +11,23 @@ EPS = 1e-12
 @HEADS.register_module()
 class ATSSRankHead(ATSSHead):
 
+    _n_anchors: int
+
     def __init__(self,
                  num_classes,
                  in_channels,
                  stacked_convs=4,
                  conv_cfg=None,
                  norm_cfg=dict(type='GN', num_groups=32, requires_grad=True),
-                 loss_centerness=dict(
-                     type='CrossEntropyLoss',
-                     use_sigmoid=True,
-                     loss_weight=1.0),
-                 loss_rank=dict(
-                     type='RankLoss'
-                     ),
+                 loss_centerness=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
+                 loss_rank=dict(type='RankingLoss', strategy='all', metric='cosine'),
+                 n_anchors=256,
                  **kwargs):
         self.stacked_convs = stacked_convs
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
-        super(ATSSHead, self).__init__(num_classes, in_channels, **kwargs)
+        self._n_anchors = n_anchors
+        super(ATSSRankHead, self).__init__(num_classes, in_channels, **kwargs)
 
         self.sampling = False
         if self.train_cfg:
@@ -78,8 +77,18 @@ class ATSSRankHead(ATSSHead):
 
         # classification loss
         loss_cls = self.loss_cls(
-            cls_score, labels, label_weights, avg_factor=num_total_samples)
-        loss_rank = self.loss_rank(latent_vectors, labels, label_weights, avg_factor=num_total_samples)
+            cls_score, labels, label_weights, avg_factor=num_total_samples
+        )
+        
+        # Rank Loss calculation is very space intensive.
+        # Therefore, it is important to minimize the number of anchors used.
+        # Set the number of anchors at double of num_total_samples to account for background
+        if len(centerness)>self._n_anchors:
+            _, topk_idx = centerness.topk(self._n_anchors)
+            _latent_vectors, _labels, _label_weights = latent_vectors[topk_idx], labels[topk_idx], label_weights[topk_idx]
+        else:
+            _latent_vectors, _labels, _label_weights = latent_vectors, labels, label_weights
+        loss_rank = self.loss_rank(_latent_vectors, _labels, _label_weights, avg_factor=num_total_samples)
 
         # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
         bg_class_ind = self.num_classes

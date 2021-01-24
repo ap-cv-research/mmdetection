@@ -1,15 +1,15 @@
 from typing import Callable
 import torch
 import torch.nn as nn
-# from ..builder import LOSSES
-# from .utils import weight_reduce_loss
+from ..builder import LOSSES
+from .utils import weight_reduce_loss
 
 
 __all__ = ('RankingLoss',)
 
 
 def _get_triplet_mask(labels: torch.Tensor) -> torch.BoolTensor:
-    """Return a 3D mask where mask[a, p, n] is True iff the triplet (a, p, n) is valid.
+    """Return a 3D mask where mask[a, p, n] is True if the triplet (a, p, n) is valid.
     
     A triplet (i, j, k) is valid if:
         - i, j, k are distinct
@@ -23,11 +23,10 @@ def _get_triplet_mask(labels: torch.Tensor) -> torch.BoolTensor:
     """
 
     # Check that i, j and k are distinct
-    indices_equal = torch.eye(labels.size(0)).bool()
-    indices_not_equal = torch.logical_not(indices_equal)
-    i_not_equal_j = indices_not_equal.unsqueeze(2)
-    i_not_equal_k = indices_not_equal.unsqueeze(1)
-    j_not_equal_k = indices_not_equal.unsqueeze(0)
+    indices = torch.logical_not(torch.eye(labels.size(0)).bool()).to(labels.device)
+    i_not_equal_j = indices.unsqueeze(2)
+    i_not_equal_k = indices.unsqueeze(1)
+    j_not_equal_k = indices.unsqueeze(0)
 
     distinct_indices = (i_not_equal_j & i_not_equal_k) & j_not_equal_k
 
@@ -150,24 +149,23 @@ class L2Norm(object):
         return distances
 
 
-def batch_hard_triplet_loss(labels: torch.Tensor, pairwise_dist: torch.Tensor, margin: float, device='cpu'):
+def batch_hard_triplet_loss(labels: torch.Tensor, pairwise_dist: torch.Tensor, margin: float, device='cpu') -> torch.Tensor:
     """Build the triplet loss over a batch of embeddings.
 
     For each anchor, we get the hardest positive and hardest negative to form a triplet.
 
     Args:
         labels (torch.Tensor): labels of the batch, of size (batch_size,)
-        pairwise_dist (torch.Tensor): pairwise distance matrix tensor of shape (batch_size, batch_size)
+        pairwise_dist (torch.Tensor): distance matrix (batch_size, batch_size)
         margin (float): margin for triplet loss
-        device (str, optional): [description]. Defaults to 'cpu'.
 
     Returns:
-        [type]: scalar tensor containing the triplet loss
+        torch.Tensor: loss tensor [batch_size]
     """
-    
+    _dtype = pairwise_dist.dtype
     # For each anchor, get the hardest positive
     # First, we need to get a mask for every valid positive (they should have same label)
-    mask_anchor_positive = _get_anchor_positive_triplet_mask(labels, device).float()
+    mask_anchor_positive = _get_anchor_positive_triplet_mask(labels, device).to(_dtype)
 
     # We put to 0 any element where (a, p) is not valid (valid if a != p and label(a) == label(p))
     anchor_positive_dist = mask_anchor_positive * pairwise_dist
@@ -177,7 +175,7 @@ def batch_hard_triplet_loss(labels: torch.Tensor, pairwise_dist: torch.Tensor, m
 
     # For each anchor, get the hardest negative
     # First, we need to get a mask for every valid negative (they should have different labels)
-    mask_anchor_negative = _get_anchor_negative_triplet_mask(labels).float()
+    mask_anchor_negative = _get_anchor_negative_triplet_mask(labels).to(_dtype)
 
     # We add the maximum value in each row to the invalid negatives (label(a) == label(n))
     max_anchor_negative_dist, _ = pairwise_dist.max(1, keepdim=True)
@@ -187,55 +185,49 @@ def batch_hard_triplet_loss(labels: torch.Tensor, pairwise_dist: torch.Tensor, m
     hardest_negative_dist, _ = anchor_negative_dist.min(1, keepdim=True)
 
     # Combine biggest d(a, p) and smallest d(a, n) into final triplet loss
-    tl = hardest_positive_dist - hardest_negative_dist + margin
-    tl[tl < 0] = 0
-    triplet_loss = tl.mean()
+    triplet_loss = hardest_positive_dist - hardest_negative_dist + margin
+    triplet_loss = triplet_loss.clamp_min(0.0).squeeze()
 
     return triplet_loss
 
 
-def batch_all_triplet_loss(labels: torch.Tensor, pairwise_dist: torch.Tensor, margin: float, device='cpu'):
+def batch_all_triplet_loss(labels: torch.Tensor, pairwise_dist: torch.Tensor, margin: float, device='cpu') -> torch.Tensor:
     """Build the triplet loss over a batch of embeddings.
 
-    We generate all the valid triplets and average the loss over the positive ones.
     Args:
-        labels: labels of the batch, of size (batch_size,)
-        embeddings: tensor of shape (batch_size, embed_dim)
-        margin: margin for triplet loss
-        squared: Boolean. If true, output is the pairwise squared euclidean distance matrix.
-                 If false, output is the pairwise euclidean distance matrix.
-    Returns:
-        triplet_loss: scalar tensor containing the triplet loss
-    """
+        labels (torch.Tensor): labels of the batch, of size (batch_size,)
+        pairwise_dist (torch.Tensor): distance matrix (batch_size, batch_size)
+        margin (float): margin for triplet loss
 
+    Returns:
+        torch.Tensor: loss tensor [batch_size]
+    """
+    _dtype = pairwise_dist.dtype
     anchor_positive_dist = pairwise_dist.unsqueeze(2)
     anchor_negative_dist = pairwise_dist.unsqueeze(1)
 
     # Compute a 3D tensor of size (batch_size, batch_size, batch_size)
     # triplet_loss[i, j, k] will contain the triplet loss of anchor=i, positive=j, negative=k
-    # Uses broadcasting where the 1st argument has shape (batch_size, batch_size, 1)
-    # and the 2nd (batch_size, 1, batch_size)
     triplet_loss = anchor_positive_dist - anchor_negative_dist + margin
 
     # Put to zero the invalid triplets
     # (where label(a) != label(p) or label(n) == label(a) or a == p)
     mask = _get_triplet_mask(labels)
-    triplet_loss = mask.float() * triplet_loss
+    triplet_loss = mask.to(_dtype) * triplet_loss
 
     # Remove negative losses (i.e. the easy triplets)
-    triplet_loss = triplet_loss.clamp_min(0.0) # triplet_loss[triplet_loss < 0] = 0
+    triplet_loss = triplet_loss.clamp_min(0.0)
 
     # Count number of positive triplets (where triplet_loss > 0)
-    valid_triplets = triplet_loss.gt(1e-16)
-    num_positive_triplets = valid_triplets.size(0)
+    valid_triplets = triplet_loss.gt(1e-16).sum(dim=(1,2))
 
     # Get final mean triplet loss over the positive valid triplets
-    triplet_loss = triplet_loss.sum(dim=(1,2)) / valid_triplets.sum(dim=(1,2)).clamp_min(1)
+    triplet_loss = triplet_loss.sum(dim=(1,2)) / valid_triplets.clamp_min(1)
 
     return triplet_loss
 
 
-# @LOSSES.register_module()
+@LOSSES.register_module()
 class RankingLoss(nn.Module):
 
     reduction: str
@@ -244,14 +236,28 @@ class RankingLoss(nn.Module):
     mining_strategy: Callable[[torch.Tensor, torch.Tensor, float], torch.Tensor]
     dist_metric: Callable[[torch.Tensor], torch.Tensor]
 
-    def __init__(self, 
-        margin: float=0.05, 
-        loss_weight: float=1.0, 
-        mining_strategy: str='all', 
-        dist_metric: str='cosine',
-        reduction: str='mean', 
-        ):
+    def __init__(self, margin: float=0.1, loss_weight: float=1.0, strategy: str='all', metric: str='cosine', reduction: str='mean'):
+        """Triplet loss.
 
+        Triplet version of the ranking loss seems to outperform the pair-wise
+        version. The triplets are formed by an anchor sample xa, a positive
+        sample xp and a negative sample xn. The objective is that the
+        distance between the anchor sample and the negative sample d(ra,
+        rn) representations is greater (and bigger than a margin m) than the
+        distance between the anchor and positive representations d(ra, rp):
+
+        L(ra, rp, rn) = max(0, m + d(ra, rp) - d(ra, rn))
+
+        Args:
+            margin (float, optional): margin for triplet loss. Defaults to 0.1.
+            loss_weight (float, optional): loss scale. Defaults to 1.0.
+            strategy (str, optional): online triplet mining strategy (options {'all', 'hard'}). Defaults to 'all'.
+            metric (str, optional): ditance metric (options {'consine', 'l2norm'}). Defaults to 'cosine'.
+            reduction (str, optional): [description]. Defaults to 'mean'.
+        """
+
+        
+        super(RankingLoss, self).__init__()
         _strategies = dict(all=batch_all_triplet_loss, hard=batch_hard_triplet_loss)
         _dist_metrics = dict(cosine=CosineDistance(), l2norm=L2Norm())
         
@@ -260,15 +266,15 @@ class RankingLoss(nn.Module):
         assert isinstance(loss_weight, float)
         assert isinstance(margin, float)
         assert margin>0
-        assert isinstance(mining_strategy, str)
-        assert mining_strategy in _strategies
-        assert isinstance(dist_metric, str)
-        assert dist_metric in _dist_metrics
+        assert isinstance(strategy, str)
+        assert strategy in _strategies
+        assert isinstance(metric, str)
+        assert metric in _dist_metrics
 
         self.margin = margin
         self.loss_weight = loss_weight
-        self.mining_strategy = _strategies[mining_strategy]
-        self.dist_metric = _dist_metrics[dist_metric]
+        self.mining_strategy = _strategies[strategy]
+        self.dist_metric = _dist_metrics[metric]
         self.reduction = reduction
 
     def forward(self,
@@ -320,7 +326,7 @@ class RankingLoss(nn.Module):
             target (torch.Tensor): The learning label of the prediction.
         """
         distances = self.dist_metric(pred)
-        triplet_loss = self.mining_strategy(target, distances, self.margin, target.device)
+        triplet_loss = self.mining_strategy(target, distances, self.margin, pred.device)
     
         return triplet_loss
 
@@ -361,31 +367,29 @@ class RankingLoss(nn.Module):
                     assert weight.numel() == loss.numel()
                     weight = weight.view(loss.size(0), -1)
             assert weight.ndim == loss.ndim
-        # loss = weight_reduce_loss(loss, weight, reduction, avg_factor)
+        loss = weight_reduce_loss(loss, weight, reduction, avg_factor)
         return loss
 
 
-if __name__ == "__main__":
-    
-    import numpy as np
+# if __name__ == "__main__":
 
-    latent_space = torch.FloatTensor([
-        [1.0, 0.5, 0.3],
-        [0.0, -0.6, 2.0],
-        [1.1, 0.45, 0.25]
-    ])
-    easy_labels = torch.LongTensor(
-        [1, 0, 1]
-    )
+#     latent_space = torch.FloatTensor([
+#         [1.0, 0.5, 0.3],
+#         [0.0, -0.6, 2.0],
+#         [1.1, 0.45, 0.25]
+#     ])
+#     easy_labels = torch.LongTensor(
+#         [1, 0, 1]
+#     )
 
-    hard_labels = torch.LongTensor(
-        [1, 1, 0]
-    )
+#     hard_labels = torch.LongTensor(
+#         [1, 1, 0]
+#     )
 
-    rakn_loss = RankingLoss()
-    loss = rakn_loss.forward(pred=latent_space, target=hard_labels)
-    loss = rakn_loss.forward(pred=latent_space, target=easy_labels)
+#     rakn_loss = RankingLoss(strategy='hard')
+#     loss = rakn_loss.forward(pred=latent_space, target=hard_labels)
+#     loss = rakn_loss.forward(pred=latent_space, target=easy_labels)
 
-    print(loss)
+#     print(loss)
 
     
