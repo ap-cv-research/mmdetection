@@ -209,6 +209,54 @@ class ATSSRankHead(ATSSHead):
             loss_bbox=losses_bbox,
             loss_centerness=loss_centerness,
             loss_rank=losses_rank)
+    
+    @force_fp32(apply_to=('cls_scores', 'bbox_preds', 'centernesses'))
+    def get_bboxes(self,
+                   cls_scores,
+                   bbox_preds,
+                   centernesses,
+                   latent_vectors,
+                   img_metas,
+                   cfg=None,
+                   rescale=False,
+                   with_nms=True):
+        """Transform network output for a batch into bbox predictions.
+
+        Args:
+            cls_scores (list[Tensor]): Box scores for each scale level
+                with shape (N, num_anchors * num_classes, H, W).
+            bbox_preds (list[Tensor]): Box energies / deltas for each scale
+                level with shape (N, num_anchors * 4, H, W).
+            centernesses (list[Tensor]): Centerness for each scale level with
+                shape (N, num_anchors * 1, H, W).
+            latent_vectors (list[Tensor]): Latent vectors for each scale
+                level with shape (N, C, H, W)
+            img_metas (list[dict]): Meta information of each image, e.g.,
+                image size, scaling factor, etc.
+            cfg (mmcv.Config | None): Test / postprocessing configuration,
+                if None, test_cfg would be used. Default: None.
+            rescale (bool): If True, return boxes in original image space.
+                Default: False.
+            with_nms (bool): If True, do nms before return boxes.
+                Default: True.
+
+        Returns:
+            list[tuple[Tensor, Tensor]]: Each item in result_list is 2-tuple.
+                The first item is an (n, 5) tensor, where the first 4 columns
+                are bounding box positions (tl_x, tl_y, br_x, br_y) and the
+                5-th column is a score between 0 and 1. The second item is a
+                (n,) tensor where each item is the predicted class label of the
+                corresponding box.
+        """
+        return super(ATSSRankHead, self).get_bboxes(
+            cls_scores,
+            bbox_preds,
+            centernesses,
+            img_metas,
+            cfg=cfg,
+            rescale=rescale,
+            with_nms=with_nms
+        )
 
     def forward_single(self, x, scale):
         """Forward feature of a single scale level.
